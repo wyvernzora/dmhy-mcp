@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -36,14 +37,14 @@ func newFixtureServer(t *testing.T) *httptest.Server {
 func TestParseFixture_AllFieldsPopulate(t *testing.T) {
 	srv := newFixtureServer(t)
 	defer srv.Close()
-	c := NewClient(Config{BaseURL: srv.URL, MinInterval: 1 * time.Millisecond})
+	c := NewClient(Config{BaseURL: srv.URL, MinInterval: 1 * time.Millisecond, RetryBackoff: 5 * time.Millisecond})
 
 	rels, err := c.Fetch(context.Background(), Query{})
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	if len(rels) != 5 {
-		t.Fatalf("want 5 items, got %d", len(rels))
+	if len(rels) != 9 {
+		t.Fatalf("want 9 items, got %d", len(rels))
 	}
 
 	first := rels[0]
@@ -83,7 +84,7 @@ func TestParseFixture_AllFieldsPopulate(t *testing.T) {
 func TestParseFixture_Base32MagnetAndManyTrackers(t *testing.T) {
 	srv := newFixtureServer(t)
 	defer srv.Close()
-	c := NewClient(Config{BaseURL: srv.URL, MinInterval: 1 * time.Millisecond})
+	c := NewClient(Config{BaseURL: srv.URL, MinInterval: 1 * time.Millisecond, RetryBackoff: 5 * time.Millisecond})
 	rels, err := c.Fetch(context.Background(), Query{})
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
@@ -101,16 +102,22 @@ func TestParseFixture_Base32MagnetAndManyTrackers(t *testing.T) {
 func TestParseFixture_PubDateFallback(t *testing.T) {
 	srv := newFixtureServer(t)
 	defer srv.Close()
-	c := NewClient(Config{BaseURL: srv.URL, MinInterval: 1 * time.Millisecond})
+	c := NewClient(Config{BaseURL: srv.URL, MinInterval: 1 * time.Millisecond, RetryBackoff: 5 * time.Millisecond})
 	rels, err := c.Fetch(context.Background(), Query{})
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	last := rels[len(rels)-1]
-	if last.PubDate.IsZero() {
+	var noTZ Release
+	for _, r := range rels {
+		if strings.Contains(r.Title, "NoOffsetTZ") {
+			noTZ = r
+			break
+		}
+	}
+	if noTZ.PubDate.IsZero() {
 		t.Fatal("fallback pubdate should not be zero")
 	}
-	_, off := last.PubDate.Zone()
+	_, off := noTZ.PubDate.Zone()
 	if off != 8*3600 {
 		t.Errorf("fallback offset = %d, want 28800", off)
 	}
@@ -216,7 +223,7 @@ func TestFetch_RetriesOnce_OnFiveHundred(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(Config{BaseURL: srv.URL, MinInterval: 1 * time.Millisecond})
+	c := NewClient(Config{BaseURL: srv.URL, MinInterval: 1 * time.Millisecond, RetryBackoff: 5 * time.Millisecond})
 	start := time.Now()
 	rels, err := c.Fetch(context.Background(), Query{})
 	dur := time.Since(start)
@@ -226,8 +233,8 @@ func TestFetch_RetriesOnce_OnFiveHundred(t *testing.T) {
 	if len(rels) == 0 {
 		t.Fatal("no results after retry")
 	}
-	if dur < 2*time.Second {
-		t.Errorf("expected backoff >=2s, got %v", dur)
+	if dur < 5*time.Millisecond {
+		t.Errorf("expected backoff >=5ms, got %v", dur)
 	}
 	if atomic.LoadInt32(&calls) != 2 {
 		t.Errorf("call count = %d, want 2", calls)
@@ -242,7 +249,7 @@ func TestFetch_NoRetryOn4xx(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(Config{BaseURL: srv.URL, MinInterval: 1 * time.Millisecond})
+	c := NewClient(Config{BaseURL: srv.URL, MinInterval: 1 * time.Millisecond, RetryBackoff: 5 * time.Millisecond})
 	_, err := c.Fetch(context.Background(), Query{})
 	if err == nil {
 		t.Fatal("expected error")
@@ -250,6 +257,12 @@ func TestFetch_NoRetryOn4xx(t *testing.T) {
 	var te *ToolError
 	if !errors.As(err, &te) {
 		t.Fatalf("err not ToolError: %T", err)
+	}
+	if te.Code != CodeInternal {
+		t.Errorf("4xx (non-403/429) should map to %s, got %s", CodeInternal, te.Code)
+	}
+	if te.Retriable {
+		t.Error("4xx should not be retriable")
 	}
 	if atomic.LoadInt32(&calls) != 1 {
 		t.Errorf("expected single call, got %d", calls)
@@ -262,7 +275,7 @@ func TestFetch_BlockedOn429(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(Config{BaseURL: srv.URL, MinInterval: 1 * time.Millisecond})
+	c := NewClient(Config{BaseURL: srv.URL, MinInterval: 1 * time.Millisecond, RetryBackoff: 5 * time.Millisecond})
 	_, err := c.Fetch(context.Background(), Query{})
 	var te *ToolError
 	if !errors.As(err, &te) {
@@ -283,7 +296,7 @@ func TestFetch_MalformedBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(Config{BaseURL: srv.URL, MinInterval: 1 * time.Millisecond})
+	c := NewClient(Config{BaseURL: srv.URL, MinInterval: 1 * time.Millisecond, RetryBackoff: 5 * time.Millisecond})
 	_, err := c.Fetch(context.Background(), Query{})
 	var te *ToolError
 	if !errors.As(err, &te) {
@@ -312,6 +325,126 @@ func TestFetch_HonorsMinInterval(t *testing.T) {
 	}
 	if got := time.Since(start); got < 150*time.Millisecond {
 		t.Errorf("second fetch too soon: %v", got)
+	}
+}
+
+func TestParseFixture_AllEightCategories(t *testing.T) {
+	srv := newFixtureServer(t)
+	defer srv.Close()
+	c := NewClient(Config{BaseURL: srv.URL, MinInterval: 1 * time.Millisecond, RetryBackoff: 5 * time.Millisecond})
+	rels, err := c.Fetch(context.Background(), Query{})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	seen := map[int]string{}
+	for _, r := range rels {
+		seen[r.CategoryID] = r.CategoryText
+	}
+	for _, want := range Categories {
+		if _, ok := seen[want.ID]; !ok {
+			t.Errorf("fixture missing category %d (%s)", want.ID, want.EN)
+		}
+	}
+}
+
+func TestFetch_HonorsConcurrencyCap(t *testing.T) {
+	body := loadFixture(t)
+	var (
+		mu       sync.Mutex
+		inFlight int
+		peak     int
+	)
+	gate := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		inFlight++
+		if inFlight > peak {
+			peak = inFlight
+		}
+		mu.Unlock()
+		<-gate
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/rss+xml")
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{
+		BaseURL:      srv.URL,
+		Concurrency:  2,
+		MinInterval:  1 * time.Millisecond,
+		RetryBackoff: 5 * time.Millisecond,
+	})
+
+	const callers = 6
+	errs := make(chan error, callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			_, err := c.Fetch(context.Background(), Query{})
+			errs <- err
+		}()
+	}
+
+	// Give the goroutines time to queue up against the semaphore. With cap=2
+	// only two should reach the handler.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		got := inFlight
+		mu.Unlock()
+		if got >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	peakBeforeRelease := peak
+	mu.Unlock()
+	if peakBeforeRelease > 2 {
+		t.Errorf("concurrency cap breached: peak in-flight = %d, want <= 2", peakBeforeRelease)
+	}
+
+	close(gate)
+	for i := 0; i < callers; i++ {
+		if err := <-errs; err != nil {
+			t.Errorf("caller %d: %v", i, err)
+		}
+	}
+
+	mu.Lock()
+	finalPeak := peak
+	mu.Unlock()
+	if finalPeak > 2 {
+		t.Errorf("concurrency cap breached after drain: peak = %d", finalPeak)
+	}
+}
+
+// TestFetch_Live hits the real upstream once. Skipped unless DMHY_LIVE=1 is set
+// so CI and local runs don't depend on network connectivity. Verifies that the
+// response shape hasn't drifted.
+func TestFetch_Live(t *testing.T) {
+	if os.Getenv("DMHY_LIVE") != "1" {
+		t.Skip("set DMHY_LIVE=1 to enable")
+	}
+	c := NewClient(Config{})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	rels, err := c.Fetch(ctx, Query{Keyword: "anime"})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(rels) == 0 {
+		t.Fatal("upstream returned 0 items; likely a schema regression")
+	}
+	r := rels[0]
+	if r.Title == "" || r.Link == "" || r.GUID == "" {
+		t.Errorf("first release missing required fields: %+v", r)
+	}
+	if r.PubDate.IsZero() {
+		t.Errorf("first release missing pubDate")
 	}
 }
 

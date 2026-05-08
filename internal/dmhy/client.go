@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,11 +17,12 @@ import (
 )
 
 const (
-	DefaultBaseURL     = "https://share.dmhy.org/topics/rss/rss.xml"
-	DefaultUserAgent   = "karasu-dmhy-mcp/0.1"
-	DefaultConcurrency = 2
-	DefaultMinInterval = 500 * time.Millisecond
-	DefaultTimeout     = 15 * time.Second
+	DefaultBaseURL      = "https://share.dmhy.org/topics/rss/rss.xml"
+	DefaultUserAgent    = "karasu-dmhy-mcp/0.1"
+	DefaultConcurrency  = 2
+	DefaultMinInterval  = 500 * time.Millisecond
+	DefaultTimeout      = 15 * time.Second
+	DefaultRetryBackoff = 2 * time.Second
 )
 
 // Query holds the upstream filter parameters. Zero values are not sent.
@@ -33,12 +35,13 @@ type Query struct {
 
 // Config configures a Client. Zero values fall back to package defaults.
 type Config struct {
-	BaseURL     string
-	UserAgent   string
-	Concurrency int
-	MinInterval time.Duration
-	Timeout     time.Duration
-	Logger      *slog.Logger
+	BaseURL      string
+	UserAgent    string
+	Concurrency  int
+	MinInterval  time.Duration
+	Timeout      time.Duration
+	RetryBackoff time.Duration
+	Logger       *slog.Logger
 }
 
 // Client is the politeness-wrapped DMHY HTTP client. Safe for concurrent use.
@@ -55,6 +58,8 @@ type Client struct {
 	mu          sync.Mutex
 	lastCall    time.Time
 	minInterval time.Duration
+
+	retryBackoff time.Duration
 
 	tzWarnOnce sync.Once
 
@@ -78,6 +83,9 @@ func NewClient(cfg Config) *Client {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = DefaultTimeout
 	}
+	if cfg.RetryBackoff <= 0 {
+		cfg.RetryBackoff = DefaultRetryBackoff
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
@@ -93,6 +101,7 @@ func NewClient(cfg Config) *Client {
 		parser:       &rss.Parser{},
 		sem:          make(chan struct{}, cfg.Concurrency),
 		minInterval:  cfg.MinInterval,
+		retryBackoff: cfg.RetryBackoff,
 		asiaShanghai: loc,
 	}
 }
@@ -131,10 +140,12 @@ func (c *Client) Fetch(ctx context.Context, q Query) ([]Release, error) {
 
 	body, terr := c.fetchOnce(ctx, target)
 	if terr != nil && terr.Retriable {
+		t := time.NewTimer(c.retryBackoff)
 		select {
 		case <-ctx.Done():
+			t.Stop()
 			return nil, &ToolError{Code: CodeUpstreamUnavailable, Message: ctx.Err().Error(), Retriable: true}
-		case <-time.After(2 * time.Second):
+		case <-t.C:
 		}
 		body, terr = c.fetchOnce(ctx, target)
 	}
@@ -217,7 +228,7 @@ func (c *Client) fetchOnce(ctx context.Context, target string) (io.ReadCloser, *
 	if resp.StatusCode >= 400 {
 		resp.Body.Close()
 		return nil, &ToolError{
-			Code:      CodeUpstreamUnavailable,
+			Code:      CodeInternal,
 			Message:   fmt.Sprintf("upstream returned %d", resp.StatusCode),
 			Retriable: false,
 		}
@@ -277,53 +288,16 @@ func (c *Client) parsePubDateFallback(s string) time.Time {
 	return time.Time{}
 }
 
-// hasTimezone reports whether s ends with a recognizable RFC 822/1123 timezone
-// token. We use this to distinguish raw upstream timestamps that need the
-// Asia/Shanghai fallback from those gofeed already parsed correctly.
+// tzSuffix matches a recognizable timezone token at the end of a date string:
+// numeric offsets (+0800, -05:00), single-letter Z, or alphabetic abbreviations
+// (UTC, GMT, EST, ...).
+var tzSuffix = regexp.MustCompile(`(?:[+-]\d{2}:?\d{2}|Z|[A-Za-z]{2,5})\s*$`)
+
+// hasTimezone reports whether s ends with a recognizable timezone token. We
+// use this to distinguish raw upstream timestamps that need the Asia/Shanghai
+// fallback from those gofeed already parsed correctly.
 func hasTimezone(s string) bool {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return false
-	}
-	// numeric offset: ...+0800 or ...-05:00
-	if i := strings.LastIndexAny(s, "+-"); i > 0 {
-		rest := s[i+1:]
-		if len(rest) >= 4 {
-			ok := true
-			for j := 0; j < len(rest); j++ {
-				c := rest[j]
-				if c == ':' {
-					continue
-				}
-				if c < '0' || c > '9' {
-					ok = false
-					break
-				}
-			}
-			if ok {
-				return true
-			}
-		}
-	}
-	// alphabetic zone token at the end (UTC, GMT, EST, CST, ...)
-	last := s
-	if i := strings.LastIndex(s, " "); i >= 0 {
-		last = s[i+1:]
-	}
-	if len(last) >= 2 && len(last) <= 4 {
-		ok := true
-		for i := 0; i < len(last); i++ {
-			c := last[i]
-			if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
-				ok = false
-				break
-			}
-		}
-		if ok {
-			return true
-		}
-	}
-	return false
+	return tzSuffix.MatchString(strings.TrimSpace(s))
 }
 
 // parseInfoHash extracts the lowercased btih hash from a magnet URI. Returns

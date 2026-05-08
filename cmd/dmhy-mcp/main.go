@@ -27,6 +27,9 @@ import (
 	mcppkg "github.com/wyvernzora/dmhy-mcp/internal/mcp"
 )
 
+// version is overridable at link time via -ldflags="-X main.version=...".
+var version = "0.1.0"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "dmhy-mcp:", err)
@@ -35,17 +38,25 @@ func main() {
 }
 
 func run() error {
+	envWarnings := []envWarning{}
 	var (
-		transport     = stringFlag("transport", "DMHY_TRANSPORT", "stdio", "transport: stdio or http")
-		addr          = stringFlag("addr", "DMHY_ADDR", ":8080", "listen address (http transport only)")
-		userAgent     = stringFlag("user-agent", "DMHY_USER_AGENT", dmhy.DefaultUserAgent, "User-Agent sent to upstream")
-		upstreamBase  = stringFlag("upstream-base", "DMHY_UPSTREAM_BASE", dmhy.DefaultBaseURL, "upstream RSS endpoint")
-		concurrency   = intFlag("upstream-concurrency", "DMHY_UPSTREAM_CONCURRENCY", dmhy.DefaultConcurrency, "max concurrent upstream requests")
-		minInterval   = durationFlag("upstream-min-interval", "DMHY_UPSTREAM_MIN_INTERVAL", dmhy.DefaultMinInterval, "minimum interval between upstream requests")
-		upstreamToTO  = durationFlag("upstream-timeout", "DMHY_UPSTREAM_TIMEOUT", dmhy.DefaultTimeout, "per-request upstream HTTP timeout")
-		logLevel      = stringFlag("log-level", "DMHY_LOG_LEVEL", "info", "log level: debug, info, warn, error")
+		showVersion      = flag.Bool("version", false, "print version and exit")
+		transport        = stringFlag("transport", "DMHY_TRANSPORT", "stdio", "transport: stdio or http")
+		addr             = stringFlag("addr", "DMHY_ADDR", ":8080", "listen address (http transport only)")
+		userAgent        = stringFlag("user-agent", "DMHY_USER_AGENT", dmhy.DefaultUserAgent, "User-Agent sent to upstream")
+		upstreamBase     = stringFlag("upstream-base", "DMHY_UPSTREAM_BASE", dmhy.DefaultBaseURL, "upstream RSS endpoint")
+		concurrency      = intFlag("upstream-concurrency", "DMHY_UPSTREAM_CONCURRENCY", dmhy.DefaultConcurrency, "max concurrent upstream requests", &envWarnings)
+		minInterval      = durationFlag("upstream-min-interval", "DMHY_UPSTREAM_MIN_INTERVAL", dmhy.DefaultMinInterval, "minimum interval between upstream requests", &envWarnings)
+		upstreamTimeout  = durationFlag("upstream-timeout", "DMHY_UPSTREAM_TIMEOUT", dmhy.DefaultTimeout, "per-request upstream HTTP timeout", &envWarnings)
+		retryBackoff     = durationFlag("upstream-retry-backoff", "DMHY_UPSTREAM_RETRY_BACKOFF", dmhy.DefaultRetryBackoff, "backoff between upstream retries", &envWarnings)
+		logLevel         = stringFlag("log-level", "DMHY_LOG_LEVEL", "info", "log level: debug, info, warn, error")
 	)
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version)
+		return nil
+	}
 
 	level, err := parseLogLevel(*logLevel)
 	if err != nil {
@@ -54,29 +65,43 @@ func run() error {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(logger)
 
+	for _, w := range envWarnings {
+		logger.Warn("invalid env value, falling back to default",
+			"env", w.Env,
+			"value", w.Value,
+			"error", w.Err,
+		)
+	}
+
 	client := dmhy.NewClient(dmhy.Config{
-		BaseURL:     *upstreamBase,
-		UserAgent:   *userAgent,
-		Concurrency: *concurrency,
-		MinInterval: *minInterval,
-		Timeout:     *upstreamToTO,
-		Logger:      logger,
+		BaseURL:      *upstreamBase,
+		UserAgent:    *userAgent,
+		Concurrency:  *concurrency,
+		MinInterval:  *minInterval,
+		Timeout:      *upstreamTimeout,
+		RetryBackoff: *retryBackoff,
+		Logger:       logger,
 	})
-	server := mcppkg.New(client, logger)
+	server := mcppkg.New(client, logger, version)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	switch *transport {
 	case "stdio":
-		logger.Info("starting dmhy-mcp", "transport", "stdio", "version", "0.1.0")
+		logger.Info("starting dmhy-mcp", "transport", "stdio", "version", version)
 		return mcppkg.RunStdio(ctx, server)
 	case "http":
-		logger.Info("starting dmhy-mcp", "transport", "http", "addr", *addr, "version", "0.1.0")
+		logger.Info("starting dmhy-mcp", "transport", "http", "addr", *addr, "version", version)
 		return mcppkg.RunHTTP(ctx, server, *addr, logger)
 	default:
 		return fmt.Errorf("invalid --transport %q (want stdio or http)", *transport)
 	}
+}
+
+type envWarning struct {
+	Env, Value string
+	Err        error
 }
 
 func stringFlag(name, env, def, usage string) *string {
@@ -86,18 +111,24 @@ func stringFlag(name, env, def, usage string) *string {
 	return flag.String(name, def, fmt.Sprintf("%s (env %s)", usage, env))
 }
 
-func intFlag(name, env string, def int, usage string) *int {
+func intFlag(name, env string, def int, usage string, warnings *[]envWarning) *int {
 	if v := os.Getenv(env); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			*warnings = append(*warnings, envWarning{Env: env, Value: v, Err: err})
+		} else {
 			def = n
 		}
 	}
 	return flag.Int(name, def, fmt.Sprintf("%s (env %s)", usage, env))
 }
 
-func durationFlag(name, env string, def time.Duration, usage string) *time.Duration {
+func durationFlag(name, env string, def time.Duration, usage string, warnings *[]envWarning) *time.Duration {
 	if v := os.Getenv(env); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			*warnings = append(*warnings, envWarning{Env: env, Value: v, Err: err})
+		} else {
 			def = d
 		}
 	}

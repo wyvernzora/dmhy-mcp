@@ -56,5 +56,45 @@
       <guid isPermaLink="true">https://share.dmhy.org/topics/view/671115_nooffsettz.html</guid>
       <category domain="https://share.dmhy.org/topics/list/sort_id/12">特攝</category>
     </item>
+    <item>
+      <title>[Misc Group] Random other category item</title>
+      <link>https://share.dmhy.org/topics/view/671116_other.html</link>
+      <pubDate>Fri, 08 May 2026 08:30:00 +0800</pubDate>
+      <description />
+      <enclosure url="magnet:?xt=urn:btih:1111111111111111111111111111111111111111" length="1" type="application/x-bittorrent" />
+      <author>misc</author>
+      <guid isPermaLink="true">https://share.dmhy.org/topics/view/671116_other.html</guid>
+      <category domain="https://share.dmhy.org/topics/list/sort_id/1">其他</category>
+    </item>
+    <item>
+      <title>[OST] Anime Soundtrack Vol. 1</title>
+      <link>https://share.dmhy.org/topics/view/671117_music.html</link>
+      <pubDate>Fri, 08 May 2026 08:00:00 +0800</pubDate>
+      <description />
+      <enclosure url="magnet:?xt=urn:btih:2222222222222222222222222222222222222222" length="1" type="application/x-bittorrent" />
+      <author>music-uploader</author>
+      <guid isPermaLink="true">https://share.dmhy.org/topics/view/671117_music.html</guid>
+      <category domain="https://share.dmhy.org/topics/list/sort_id/4">音樂</category>
+    </item>
+    <item>
+      <title>[J-Drama] Sample Drama EP01</title>
+      <link>https://share.dmhy.org/topics/view/671118_drama.html</link>
+      <pubDate>Fri, 08 May 2026 07:30:00 +0800</pubDate>
+      <description />
+      <enclosure url="magnet:?xt=urn:btih:3333333333333333333333333333333333333333" length="1" type="application/x-bittorrent" />
+      <author>drama-fans</author>
+      <guid isPermaLink="true">https://share.dmhy.org/topics/view/671118_drama.html</guid>
+      <category domain="https://share.dmhy.org/topics/list/sort_id/6">日劇</category>
+    </item>
+    <item>
+      <title>[Anime Music] Character Song Collection</title>
+      <link>https://share.dmhy.org/topics/view/671119_animemusic.html</link>
+      <pubDate>Fri, 08 May 2026 07:00:00 +0800</pubDate>
+      <description />
+      <enclosure url="magnet:?xt=urn:btih:4444444444444444444444444444444444444444" length="1" type="application/x-bittorrent" />
+      <author>animusic</author>
+      <guid isPermaLink="true">https://share.dmhy.org/topics/view/671119_animemusic.html</guid>
+      <category domain="https://share.dmhy.org/topics/list/sort_id/43">動漫音樂</category>
+    </item>
   </channel>
 </rss>

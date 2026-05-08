@@ -3,6 +3,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -48,16 +49,21 @@ type QueryEcho struct {
 
 // ReleasesOutput is the structured output shape for both search and get_recent.
 type ReleasesOutput struct {
-	Query     QueryEcho       `json:"query"`
-	Count     int             `json:"count"`
-	Truncated bool            `json:"truncated"`
-	Results   []dmhy.Release  `json:"results"`
+	Query     QueryEcho      `json:"query"`
+	Count     int            `json:"count"`
+	Truncated bool           `json:"truncated"`
+	Results   []dmhy.Release `json:"results"`
 }
 
 // CategoriesOutput is the structured output shape for list_categories.
 type CategoriesOutput struct {
 	Categories []dmhy.Category `json:"categories"`
 }
+
+// internalHandler is the shape every tool implements internally. The caller
+// (wrap) is responsible for translating *dmhy.ToolError into the SDK's error
+// result and recording the err code for logs without round-tripping JSON.
+type internalHandler[I, O any] func(ctx context.Context, in I) (O, *dmhy.ToolError)
 
 // Register adds all dmhy tools to the given server.
 func Register(s *mcpsdk.Server, client *dmhy.Client, logger *slog.Logger) {
@@ -66,124 +72,113 @@ func Register(s *mcpsdk.Server, client *dmhy.Client, logger *slog.Logger) {
 			Name:        "search_releases",
 			Description: "Query the DMHY RSS feed with keyword, category, and team filters. At least one filter must be set; otherwise use get_recent.",
 		},
-		withLogging("search_releases", logger, searchHandler(client)),
+		wrap("search_releases", logger, searchHandler(client)),
 	)
 	mcpsdk.AddTool(s,
 		&mcpsdk.Tool{
 			Name:        "get_recent",
 			Description: "Return the most recent DMHY releases without requiring a keyword. Useful for browsing a category or group.",
 		},
-		withLogging("get_recent", logger, recentHandler(client)),
+		wrap("get_recent", logger, recentHandler(client)),
 	)
 	mcpsdk.AddTool(s,
 		&mcpsdk.Tool{
 			Name:        "list_categories",
 			Description: "Return the static DMHY category table (sort_id → zh-Hant text and rough English label).",
 		},
-		withLogging("list_categories", logger, categoriesHandler()),
+		wrap("list_categories", logger, categoriesHandler()),
 	)
 }
 
-// withLogging wraps a tool handler with structured logging at info level. The
-// keyword field is intentionally omitted from info logs (debug only) because
-// keywords reflect user search history.
-func withLogging[I, O any](name string, logger *slog.Logger, h mcpsdk.ToolHandlerFor[I, O]) mcpsdk.ToolHandlerFor[I, O] {
-	return func(ctx context.Context, req *mcpsdk.CallToolRequest, in I) (*mcpsdk.CallToolResult, O, error) {
+// wrap adapts an internalHandler into the SDK signature. It records logging
+// at info level (without leaking the raw input) and produces a structured
+// CallToolResult on error.
+func wrap[I, O any](name string, logger *slog.Logger, h internalHandler[I, O]) mcpsdk.ToolHandlerFor[I, O] {
+	return func(ctx context.Context, _ *mcpsdk.CallToolRequest, in I) (*mcpsdk.CallToolResult, O, error) {
 		start := time.Now()
 		logger.Debug("tool call start", "tool", name, "input", in)
-		res, out, err := h(ctx, req, in)
+		out, terr := h(ctx, in)
 		dur := time.Since(start)
 		errCode := ""
-		if res != nil && res.IsError {
-			errCode = extractErrCode(res)
-		} else if err != nil {
-			errCode = string(dmhy.CodeInternal)
+		if terr != nil {
+			errCode = string(terr.Code)
 		}
 		logger.Info("tool call",
 			"tool", name,
 			"duration_ms", dur.Milliseconds(),
 			"err_code", errCode,
 		)
-		return res, out, err
-	}
-}
-
-func extractErrCode(res *mcpsdk.CallToolResult) string {
-	for _, c := range res.Content {
-		if tc, ok := c.(*mcpsdk.TextContent); ok {
-			var te dmhy.ToolError
-			if err := unmarshalErrCode(tc.Text, &te); err == nil && te.Code != "" {
-				return string(te.Code)
-			}
+		if terr != nil {
+			return errorResult(terr), out, nil
 		}
+		return nil, out, nil
 	}
-	return string(dmhy.CodeInternal)
 }
 
-func searchHandler(client *dmhy.Client) mcpsdk.ToolHandlerFor[SearchInput, ReleasesOutput] {
-	return func(ctx context.Context, _ *mcpsdk.CallToolRequest, in SearchInput) (*mcpsdk.CallToolResult, ReleasesOutput, error) {
+func searchHandler(client *dmhy.Client) internalHandler[SearchInput, ReleasesOutput] {
+	return func(ctx context.Context, in SearchInput) (ReleasesOutput, *dmhy.ToolError) {
 		if in.Keyword == "" && in.SortID == 0 && in.TeamID == 0 {
-			return errorResult(&dmhy.ToolError{
+			return ReleasesOutput{}, &dmhy.ToolError{
 				Code:      dmhy.CodeInvalidArgument,
 				Message:   "search_releases requires at least one of keyword, sort_id, or team_id; use get_recent for the unfiltered firehose",
 				Retriable: false,
-			}), ReleasesOutput{}, nil
+			}
 		}
-		order := in.Order
-		switch order {
-		case "", "date-desc":
-			order = "date-desc"
-		case "date-asc":
+		switch in.Order {
+		case "", "date-desc", "date-asc":
 		default:
-			return errorResult(&dmhy.ToolError{
+			return ReleasesOutput{}, &dmhy.ToolError{
 				Code:      dmhy.CodeInvalidArgument,
 				Message:   fmt.Sprintf("order %q invalid; expected one of date-desc, date-asc", in.Order),
 				Retriable: false,
-			}), ReleasesOutput{}, nil
+			}
+		}
+		echoOrder := in.Order
+		if echoOrder == "" {
+			echoOrder = "date-desc"
 		}
 		limit := normalizeLimit(in.Limit, defaultSearchLimit)
 		out, terr := runFetch(ctx, client, dmhy.Query{
 			Keyword: in.Keyword,
 			SortID:  in.SortID,
 			TeamID:  in.TeamID,
-			Order:   order,
+			Order:   in.Order,
 		}, limit, in.IncludeDescription)
 		if terr != nil {
-			return errorResult(terr), ReleasesOutput{}, nil
+			return out, terr
 		}
 		out.Query = QueryEcho{
 			Keyword: in.Keyword,
 			SortID:  in.SortID,
 			TeamID:  in.TeamID,
-			Order:   order,
+			Order:   echoOrder,
 		}
-		return nil, out, nil
+		return out, nil
 	}
 }
 
-func recentHandler(client *dmhy.Client) mcpsdk.ToolHandlerFor[RecentInput, ReleasesOutput] {
-	return func(ctx context.Context, _ *mcpsdk.CallToolRequest, in RecentInput) (*mcpsdk.CallToolResult, ReleasesOutput, error) {
+func recentHandler(client *dmhy.Client) internalHandler[RecentInput, ReleasesOutput] {
+	return func(ctx context.Context, in RecentInput) (ReleasesOutput, *dmhy.ToolError) {
 		limit := normalizeLimit(in.Limit, defaultRecentLimit)
 		out, terr := runFetch(ctx, client, dmhy.Query{
 			SortID: in.SortID,
 			TeamID: in.TeamID,
-			Order:  "date-desc",
 		}, limit, false)
 		if terr != nil {
-			return errorResult(terr), ReleasesOutput{}, nil
+			return out, terr
 		}
 		out.Query = QueryEcho{
 			SortID: in.SortID,
 			TeamID: in.TeamID,
 			Order:  "date-desc",
 		}
-		return nil, out, nil
+		return out, nil
 	}
 }
 
-func categoriesHandler() mcpsdk.ToolHandlerFor[CategoriesInput, CategoriesOutput] {
-	return func(_ context.Context, _ *mcpsdk.CallToolRequest, _ CategoriesInput) (*mcpsdk.CallToolResult, CategoriesOutput, error) {
-		return nil, CategoriesOutput{Categories: dmhy.Categories}, nil
+func categoriesHandler() internalHandler[CategoriesInput, CategoriesOutput] {
+	return func(_ context.Context, _ CategoriesInput) (CategoriesOutput, *dmhy.ToolError) {
+		return CategoriesOutput{Categories: dmhy.Categories}, nil
 	}
 }
 
@@ -191,7 +186,7 @@ func runFetch(ctx context.Context, client *dmhy.Client, q dmhy.Query, limit int,
 	releases, err := client.Fetch(ctx, q)
 	if err != nil {
 		var te *dmhy.ToolError
-		if asToolError(err, &te) {
+		if errors.As(err, &te) {
 			return ReleasesOutput{}, te
 		}
 		return ReleasesOutput{}, &dmhy.ToolError{

@@ -2,9 +2,9 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -14,17 +14,25 @@ import (
 )
 
 const (
-	serverName    = "dmhy-mcp"
-	serverVersion = "0.1.0"
-	mcpEndpoint   = "/mcp"
-	healthPath    = "/healthz"
+	serverName  = "dmhy-mcp"
+	mcpEndpoint = "/mcp"
+	healthPath  = "/healthz"
+
+	// maxRequestBytes caps incoming HTTP bodies. The MCP wire protocol carries
+	// only small JSON-RPC messages; anything larger is almost certainly abuse
+	// or a misconfigured client.
+	maxRequestBytes = 1 << 20 // 1 MiB
+
+	// httpShutdownGrace must be at least the upstream HTTP timeout so an
+	// in-flight tool call has a chance to finish during graceful shutdown.
+	httpShutdownGrace = 20 * time.Second
 )
 
 // New constructs the MCP server with all dmhy tools registered.
-func New(client *dmhy.Client, logger *slog.Logger) *mcpsdk.Server {
+func New(client *dmhy.Client, logger *slog.Logger, version string) *mcpsdk.Server {
 	s := mcpsdk.NewServer(&mcpsdk.Implementation{
 		Name:    serverName,
-		Version: serverVersion,
+		Version: version,
 	}, nil)
 	Register(s, client, logger)
 	return s
@@ -40,9 +48,13 @@ func RunStdio(ctx context.Context, s *mcpsdk.Server) error {
 // is cancelled, then returns after a graceful shutdown.
 func RunHTTP(ctx context.Context, s *mcpsdk.Server, addr string, logger *slog.Logger) error {
 	mux := http.NewServeMux()
+
+	// The streamable HTTP transport spec uses a single endpoint for POST
+	// (client→server requests) and GET (server→client SSE). Mounting the SDK
+	// handler only at the exact path keeps the surface narrow.
 	mcpHandler := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return s }, nil)
-	mux.Handle(mcpEndpoint, mcpHandler)
-	mux.Handle(mcpEndpoint+"/", mcpHandler)
+	mux.Handle(mcpEndpoint, capBodySize(mcpHandler))
+
 	mux.HandleFunc(healthPath, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -58,20 +70,22 @@ func RunHTTP(ctx context.Context, s *mcpsdk.Server, addr string, logger *slog.Lo
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
+	// Bind synchronously so we only log "listening" once the port is actually
+	// accepting connections, then serve in the background.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	logger.Info("http transport listening", "addr", ln.Addr().String(), "endpoint", mcpEndpoint)
+
 	errCh := make(chan error, 1)
-	go func() {
-		logger.Info("http transport listening", "addr", addr, "endpoint", mcpEndpoint)
-		errCh <- srv.ListenAndServe()
-	}()
+	go func() { errCh <- srv.Serve(ln) }()
 
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), httpShutdownGrace)
 		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			return err
-		}
-		return nil
+		return srv.Shutdown(shutdownCtx)
 	case err := <-errCh:
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
@@ -80,11 +94,11 @@ func RunHTTP(ctx context.Context, s *mcpsdk.Server, addr string, logger *slog.Lo
 	}
 }
 
-// asToolError unwraps the dmhy.ToolError chain returned by client.Fetch.
-func asToolError(err error, te **dmhy.ToolError) bool { return errors.As(err, te) }
-
-// unmarshalErrCode parses the JSON-encoded ToolError text content. Exposed as
-// a separate function so tools.go can avoid pulling in encoding/json.
-func unmarshalErrCode(s string, te *dmhy.ToolError) error {
-	return json.Unmarshal([]byte(s), te)
+// capBodySize wraps h to reject request bodies larger than maxRequestBytes.
+// Streaming responses (SSE) are unaffected because we cap on the request side.
+func capBodySize(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+		h.ServeHTTP(w, r)
+	})
 }

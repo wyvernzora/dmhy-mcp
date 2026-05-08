@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -33,16 +32,20 @@ func fixtureBytes(t *testing.T) []byte {
 
 // startTestSession spins up an in-memory MCP server backed by a fixture-serving
 // upstream and returns a connected client session.
-func startTestSession(t *testing.T) (*mcpsdk.ClientSession, *url.URL, func()) {
+func startTestSession(t *testing.T) (*mcpsdk.ClientSession, func()) {
 	t.Helper()
 	body := fixtureBytes(t)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/rss+xml; charset=utf-8")
 		_, _ = w.Write(body)
 	}))
-	upURL, _ := url.Parse(upstream.URL)
-	client := dmhy.NewClient(dmhy.Config{BaseURL: upstream.URL, MinInterval: 1 * time.Millisecond, Logger: discardLogger()})
-	server := New(client, discardLogger())
+	client := dmhy.NewClient(dmhy.Config{
+		BaseURL:      upstream.URL,
+		MinInterval:  1 * time.Millisecond,
+		RetryBackoff: 5 * time.Millisecond,
+		Logger:       discardLogger(),
+	})
+	server := New(client, discardLogger(), "test")
 
 	t1, t2 := mcpsdk.NewInMemoryTransports()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -58,11 +61,11 @@ func startTestSession(t *testing.T) (*mcpsdk.ClientSession, *url.URL, func()) {
 		cancel()
 		upstream.Close()
 	}
-	return cs, upURL, cleanup
+	return cs, cleanup
 }
 
 func TestListTools_AllThreePresent(t *testing.T) {
-	cs, _, cleanup := startTestSession(t)
+	cs, cleanup := startTestSession(t)
 	defer cleanup()
 	res, err := cs.ListTools(context.Background(), nil)
 	if err != nil {
@@ -83,7 +86,7 @@ func TestListTools_AllThreePresent(t *testing.T) {
 }
 
 func TestListCategories_ReturnsAllEight(t *testing.T) {
-	cs, _, cleanup := startTestSession(t)
+	cs, cleanup := startTestSession(t)
 	defer cleanup()
 	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "list_categories"})
 	if err != nil {
@@ -102,7 +105,7 @@ func TestListCategories_ReturnsAllEight(t *testing.T) {
 }
 
 func TestSearchReleases_HappyPath(t *testing.T) {
-	cs, _, cleanup := startTestSession(t)
+	cs, cleanup := startTestSession(t)
 	defer cleanup()
 	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
 		Name: "search_releases",
@@ -125,7 +128,7 @@ func TestSearchReleases_HappyPath(t *testing.T) {
 		t.Errorf("count = %d, want 2", out.Count)
 	}
 	if !out.Truncated {
-		t.Error("truncated should be true (fixture has 5 dedup-survivors > 2)")
+		t.Error("truncated should be true (fixture has 8 dedup-survivors > 2)")
 	}
 	if out.Query.Order != "date-desc" {
 		t.Errorf("query.order = %q, want date-desc", out.Query.Order)
@@ -138,7 +141,7 @@ func TestSearchReleases_HappyPath(t *testing.T) {
 }
 
 func TestSearchReleases_DescriptionOptIn(t *testing.T) {
-	cs, _, cleanup := startTestSession(t)
+	cs, cleanup := startTestSession(t)
 	defer cleanup()
 	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
 		Name: "search_releases",
@@ -167,7 +170,7 @@ func TestSearchReleases_DescriptionOptIn(t *testing.T) {
 }
 
 func TestSearchReleases_DedupApplied(t *testing.T) {
-	cs, _, cleanup := startTestSession(t)
+	cs, cleanup := startTestSession(t)
 	defer cleanup()
 	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
 		Name: "search_releases",
@@ -183,14 +186,14 @@ func TestSearchReleases_DedupApplied(t *testing.T) {
 	if err := decodeStructured(res, &out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	// Fixture has 5 items, 2 sharing the same infohash; expect 4 unique.
-	if out.Count != 4 {
-		t.Errorf("count = %d, want 4 after dedup", out.Count)
+	// Fixture has 9 items, 2 sharing the same infohash; expect 8 unique.
+	if out.Count != 8 {
+		t.Errorf("count = %d, want 8 after dedup", out.Count)
 	}
 }
 
 func TestSearchReleases_RejectsAllZeroFilters(t *testing.T) {
-	cs, _, cleanup := startTestSession(t)
+	cs, cleanup := startTestSession(t)
 	defer cleanup()
 	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
 		Name:      "search_releases",
@@ -215,7 +218,7 @@ func TestSearchReleases_RejectsAllZeroFilters(t *testing.T) {
 }
 
 func TestSearchReleases_RejectsBadOrder(t *testing.T) {
-	cs, _, cleanup := startTestSession(t)
+	cs, cleanup := startTestSession(t)
 	defer cleanup()
 	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
 		Name: "search_releases",
@@ -237,7 +240,7 @@ func TestSearchReleases_RejectsBadOrder(t *testing.T) {
 }
 
 func TestGetRecent_AllowsZeroFilters(t *testing.T) {
-	cs, _, cleanup := startTestSession(t)
+	cs, cleanup := startTestSession(t)
 	defer cleanup()
 	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
 		Name:      "get_recent",
@@ -266,8 +269,13 @@ func TestSearchReleases_UpstreamUnavailable(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer upstream.Close()
-	client := dmhy.NewClient(dmhy.Config{BaseURL: upstream.URL, MinInterval: 1 * time.Millisecond, Logger: discardLogger()})
-	server := New(client, discardLogger())
+	client := dmhy.NewClient(dmhy.Config{
+		BaseURL:      upstream.URL,
+		MinInterval:  1 * time.Millisecond,
+		RetryBackoff: 5 * time.Millisecond,
+		Logger:       discardLogger(),
+	})
+	server := New(client, discardLogger(), "test")
 	t1, t2 := mcpsdk.NewInMemoryTransports()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -306,8 +314,13 @@ func TestHTTPTransport_Healthz(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	client := dmhy.NewClient(dmhy.Config{BaseURL: upstream.URL, MinInterval: 1 * time.Millisecond, Logger: discardLogger()})
-	server := New(client, discardLogger())
+	client := dmhy.NewClient(dmhy.Config{
+		BaseURL:      upstream.URL,
+		MinInterval:  1 * time.Millisecond,
+		RetryBackoff: 5 * time.Millisecond,
+		Logger:       discardLogger(),
+	})
+	server := New(client, discardLogger(), "test")
 
 	mux := http.NewServeMux()
 	mcpHandler := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return server }, nil)

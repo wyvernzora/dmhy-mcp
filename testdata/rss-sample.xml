@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0">
+  <channel>
+    <title>動漫花園資源網</title>
+    <link>https://share.dmhy.org</link>
+    <description>動漫花園資源網</description>
+    <language>zh-cn</language>
+    <pubDate>Fri, 08 May 2026 12:00:00 +0800</pubDate>
+    <item>
+      <title>【喵萌奶茶屋】★04月新番★[進撃の巨人][01][1080p][繁日雙語][招募翻譯]</title>
+      <link>https://share.dmhy.org/topics/view/671111_attack_on_titan_01.html</link>
+      <pubDate>Fri, 08 May 2026 11:30:00 +0800</pubDate>
+      <description>&lt;p&gt;&lt;img src="https://example.com/cover.jpg"&gt;&lt;/p&gt;&lt;p&gt;歡迎加入我們！&lt;/p&gt;</description>
+      <enclosure url="magnet:?xt=urn:btih:abcdef1234567890abcdef1234567890abcdef12&amp;tr=http://tracker.example.com" length="1" type="application/x-bittorrent" />
+      <author>nyamomo</author>
+      <guid isPermaLink="true">https://share.dmhy.org/topics/view/671111_attack_on_titan_01.html</guid>
+      <category domain="https://share.dmhy.org/topics/list/sort_id/2">動畫</category>
+    </item>
+    <item>
+      <title>[Lilith-Raws] 葬送的芙莉蓮 - 28 [Baha][WEB-DL][1080p][AVC AAC][CHT][MP4]</title>
+      <link>https://share.dmhy.org/topics/view/671112_frieren_28.html</link>
+      <pubDate>Fri, 08 May 2026 11:00:00 +0800</pubDate>
+      <description>Lilith-Raws presents.</description>
+      <enclosure url="magnet:?xt=urn:btih:JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&amp;tr.1=udp://t1.example.com&amp;tr.2=udp://t2.example.com&amp;tr.3=udp://t3.example.com&amp;tr.4=udp://t4.example.com&amp;tr.5=udp://t5.example.com&amp;tr.6=udp://t6.example.com&amp;tr.7=udp://t7.example.com&amp;tr.8=udp://t8.example.com&amp;tr.9=udp://t9.example.com&amp;tr.10=udp://t10.example.com&amp;tr.11=udp://t11.example.com&amp;tr.12=udp://t12.example.com&amp;tr.13=udp://t13.example.com&amp;tr.14=udp://t14.example.com&amp;tr.15=udp://t15.example.com" length="1" type="application/x-bittorrent" />
+      <author>Lilith-Raws</author>
+      <guid isPermaLink="true">https://share.dmhy.org/topics/view/671112_frieren_28.html</guid>
+      <category domain="https://share.dmhy.org/topics/list/sort_id/2">動畫</category>
+    </item>
+    <item>
+      <title>[ANi] 我推的孩子 第二季 - 12 [1080P][Baha][WEB-DL][AAC AVC][CHT][MP4]</title>
+      <link>https://share.dmhy.org/topics/view/671113_oshi_no_ko_s2_12.html</link>
+      <pubDate>Fri, 08 May 2026 10:30:00 +0800</pubDate>
+      <description />
+      <enclosure url="magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567" length="1" type="application/x-bittorrent" />
+      <author>ANi</author>
+      <guid isPermaLink="true">https://share.dmhy.org/topics/view/671113_oshi_no_ko_s2_12.html</guid>
+      <category domain="https://share.dmhy.org/topics/list/sort_id/31">季度全集</category>
+    </item>
+    <item>
+      <title>[Duplicate Group] Same Hash Different Title</title>
+      <link>https://share.dmhy.org/topics/view/671114_dup.html</link>
+      <pubDate>Fri, 08 May 2026 10:00:00 +0800</pubDate>
+      <description />
+      <enclosure url="magnet:?xt=urn:btih:abcdef1234567890abcdef1234567890abcdef12" length="1" type="application/x-bittorrent" />
+      <author>SomeoneElse</author>
+      <guid isPermaLink="true">https://share.dmhy.org/topics/view/671114_dup.html</guid>
+      <category domain="https://share.dmhy.org/topics/list/sort_id/7">ＲＡＷ</category>
+    </item>
+    <item>
+      <title>[NoOffsetTZ] Pubdate fallback test</title>
+      <link>https://share.dmhy.org/topics/view/671115_nooffsettz.html</link>
+      <pubDate>Fri, 08 May 2026 09:00:00</pubDate>
+      <description />
+      <enclosure url="magnet:?xt=urn:btih:fedcba9876543210fedcba9876543210fedcba98" length="1" type="application/x-bittorrent" />
+      <author>tester</author>
+      <guid isPermaLink="true">https://share.dmhy.org/topics/view/671115_nooffsettz.html</guid>
+      <category domain="https://share.dmhy.org/topics/list/sort_id/12">特攝</category>
+    </item>
+  </channel>
+</rss>

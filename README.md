@@ -7,13 +7,20 @@ Thin MCP server wrapping the DMHY (動漫花園) RSS feed. Built on the official
 
 | Tool | Purpose |
 | --- | --- |
-| `search_releases` | Filtered query (`keyword`, `sort_id`, `team_id`, `order`, `limit`, `include_description`). At least one filter required. |
+| `search_releases` | Filtered query (`keyword`, `category`, `order`, `limit`, `offset`). At least one filter required. Start with a short keyword fragment and refine based on the returned titles — release titles mix scripts and tags unpredictably, so long queries usually miss. Paginate via `offset` when `has_more` is true; dedup across pages by `info_hash`. |
 | `get_recent` | Latest releases without a keyword. Useful for browsing a category or group. |
-| `list_categories` | Static DMHY category table (sort_id ↔ zh-Hant/EN labels). |
+| `get_magnets` | Resolve `info_hash` values from prior search / recent results into magnet URIs. Search results omit magnets to keep responses small; call this only for the few releases the agent actually wants to download. Returns a map of `info_hash → magnet` plus a list of any hashes not in the in-memory cache. |
 
-Releases are returned as raw upstream titles plus magnet, info-hash, pub date,
-author, link, and category metadata. The server intentionally does **not** parse
-release titles — that is the agent's job.
+`category` is an enum: `anime` (DMHY sort_id 2) or `anime_season` (sort_id 31).
+Search / recent results carry `category`, `title`, `info_hash`, and
+`pub_date` — the magnet URI is intentionally omitted (tracker lists make
+magnets large and noisy). Fetch magnets via `get_magnets` for the chosen
+releases. Returned magnets are pre-pruned of dead trackers using a
+background BEP-15 / HTTP probe cache, so they stay short and only carry
+trackers that actually responded recently.
+
+The server intentionally does **not** parse release titles — the team tag
+is already inside the title and the agent is expected to read it.
 
 ## Build & run
 

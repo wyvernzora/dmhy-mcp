@@ -64,6 +64,9 @@ type Client struct {
 	tzWarnOnce sync.Once
 
 	asiaShanghai *time.Location
+
+	cache  *magnetCache
+	prober *TrackerProber
 }
 
 // NewClient builds a Client from cfg, applying defaults for zero fields.
@@ -103,7 +106,38 @@ func NewClient(cfg Config) *Client {
 		minInterval:  cfg.MinInterval,
 		retryBackoff: cfg.RetryBackoff,
 		asiaShanghai: loc,
+		cache:        newMagnetCache(5000),
+		prober:       NewTrackerProber(TrackerProberConfig{Logger: cfg.Logger}),
 	}
+}
+
+// Close releases background resources (the tracker prober).
+func (c *Client) Close() {
+	if c.prober != nil {
+		c.prober.Close()
+	}
+}
+
+// GetMagnets resolves a list of info hashes against the in-memory cache and
+// returns rebuilt magnet URIs with dead trackers filtered out. Hashes not
+// present in cache are returned in `missing` so the caller can decide
+// whether to re-search. Cache entries populate as a side effect of Fetch.
+func (c *Client) GetMagnets(infoHashes []string) (found map[string]string, missing []string) {
+	found = make(map[string]string, len(infoHashes))
+	for _, h := range infoHashes {
+		if h == "" {
+			missing = append(missing, h)
+			continue
+		}
+		magnet, _, ok := c.cache.get(h)
+		if !ok {
+			missing = append(missing, h)
+			continue
+		}
+		filtered := FilterMagnetTrackers(magnet, c.prober.ShouldKeep)
+		found[h] = filtered
+	}
+	return found, missing
 }
 
 // BuildURL composes the upstream URL for q. Zero/empty parameters are omitted
@@ -164,8 +198,17 @@ func (c *Client) Fetch(ctx context.Context, q Query) ([]Release, error) {
 	}
 
 	out := make([]Release, 0, len(feed.Items))
+	var primeURLs []string
 	for _, item := range feed.Items {
-		out = append(out, c.toRelease(item))
+		r := c.toRelease(item)
+		out = append(out, r)
+		if r.InfoHash != "" && r.Magnet != "" {
+			c.cache.put(r.InfoHash, r.Magnet, r.Title)
+			primeURLs = append(primeURLs, MagnetTrackers(r.Magnet)...)
+		}
+	}
+	if len(primeURLs) > 0 && c.prober != nil {
+		c.prober.Prime(primeURLs)
 	}
 	return out, nil
 }

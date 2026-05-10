@@ -14,50 +14,98 @@ import (
 )
 
 const (
-	defaultSearchLimit = 100
+	defaultSearchLimit = 50
 	defaultRecentLimit = 50
-	maxLimit           = 500
+	// maxLimit caps a single tool response so it fits inside typical MCP-client
+	// output budgets. Callers paginate with offset + dedup by info_hash. The
+	// upstream RSS feed itself returns up to ~500 entries per query, so the
+	// effective ceiling for a single query is offset+limit ≤ 500.
+	maxLimit = 100
 )
+
+// categoryToID maps the agent-facing enum value to the DMHY sort_id.
+// Only categories the project surfaces are listed; all other DMHY sort_ids
+// are not reachable through this server.
+var categoryToID = map[string]int{
+	"anime":        2,
+	"anime_season": 31,
+}
+
+// idToCategory is the reverse lookup for translating an upstream sort_id
+// back into the enum value used in MCP output. Releases with a sort_id
+// outside this table get an empty Category in the response.
+var idToCategory = map[int]string{
+	2:  "anime",
+	31: "anime_season",
+}
+
+func resolveCategory(s string) (int, *dmhy.ToolError) {
+	if s == "" {
+		return 0, nil
+	}
+	id, ok := categoryToID[s]
+	if !ok {
+		return 0, &dmhy.ToolError{
+			Code:      dmhy.CodeInvalidArgument,
+			Message:   fmt.Sprintf("category %q invalid; expected anime or anime_season", s),
+			Retriable: false,
+		}
+	}
+	return id, nil
+}
 
 // SearchInput is the JSON input shape for the search_releases tool.
 type SearchInput struct {
-	Keyword            string `json:"keyword,omitempty" jsonschema:"substring search across the title field. Spaces are encoded as +"`
-	SortID             int    `json:"sort_id,omitempty" jsonschema:"DMHY category id; 0 means all categories. See list_categories for known ids"`
-	TeamID             int    `json:"team_id,omitempty" jsonschema:"DMHY team/group id; 0 means all groups"`
-	Order              string `json:"order,omitempty" jsonschema:"sort order; one of date-desc (default) or date-asc"`
-	Limit              int    `json:"limit,omitempty" jsonschema:"max releases to return; default 100, max 500"`
-	IncludeDescription bool   `json:"include_description,omitempty" jsonschema:"include the raw HTML description blob; default false because it is large and low-signal"`
+	Keyword  string `json:"keyword,omitempty" jsonschema:"substring search across the upstream title field. Spaces become AND-joined terms (encoded as +). Prefer short, broad fragments — release titles mix CJK and Latin scripts, group sigils, brackets, and codec tags unpredictably, so long compound queries usually miss. Refine after seeing results."`
+	Category string `json:"category,omitempty" jsonschema:"DMHY category enum; one of anime, anime_season"`
+	Order    string `json:"order,omitempty" jsonschema:"sort order; one of date-desc (default) or date-asc"`
+	Limit    int    `json:"limit,omitempty" jsonschema:"max releases to return in this page; default 50, max 100"`
+	Offset   int    `json:"offset,omitempty" jsonschema:"page offset into the deduped result set; default 0. When has_more is true, call again with offset += limit. Dedup across pages by info_hash."`
 }
 
 // RecentInput is the JSON input shape for the get_recent tool.
 type RecentInput struct {
-	SortID int `json:"sort_id,omitempty" jsonschema:"DMHY category id; 0 means all categories"`
-	TeamID int `json:"team_id,omitempty" jsonschema:"DMHY team/group id; 0 means all groups"`
-	Limit  int `json:"limit,omitempty" jsonschema:"max releases to return; default 50, max 500"`
+	Category string `json:"category,omitempty" jsonschema:"DMHY category enum; one of anime, anime_season"`
+	Limit    int    `json:"limit,omitempty" jsonschema:"max releases to return in this page; default 50, max 100"`
+	Offset   int    `json:"offset,omitempty" jsonschema:"page offset into the deduped result set; default 0. When has_more is true, call again with offset += limit. Dedup across pages by info_hash."`
 }
-
-// CategoriesInput has no fields; declared for schema completeness.
-type CategoriesInput struct{}
 
 // QueryEcho is the resolved query echoed back to the client.
 type QueryEcho struct {
-	Keyword string `json:"keyword,omitempty"`
-	SortID  int    `json:"sort_id"`
-	TeamID  int    `json:"team_id"`
-	Order   string `json:"order"`
+	Keyword  string `json:"keyword,omitempty"`
+	Category string `json:"category,omitempty"`
+	Order    string `json:"order"`
+}
+
+// Release is the wire shape sent to MCP clients. Narrower than dmhy.Release —
+// only the fields agents need are surfaced. The magnet URI is intentionally
+// omitted: tracker lists make magnets large and noisy. Use get_magnets with
+// the info_hash to retrieve the rebuilt (dead-tracker-pruned) magnet for the
+// few releases the agent actually wants to download.
+type Release struct {
+	Category string    `json:"category"`
+	Title    string    `json:"title"`
+	InfoHash string    `json:"info_hash"`
+	PubDate  time.Time `json:"pub_date"`
 }
 
 // ReleasesOutput is the structured output shape for both search and get_recent.
 type ReleasesOutput struct {
-	Query     QueryEcho      `json:"query"`
-	Count     int            `json:"count"`
-	Truncated bool           `json:"truncated"`
-	Results   []dmhy.Release `json:"results"`
+	Query   QueryEcho `json:"query"`
+	Count   int       `json:"count"`
+	HasMore bool      `json:"has_more"`
+	Results []Release `json:"results"`
 }
 
-// CategoriesOutput is the structured output shape for list_categories.
-type CategoriesOutput struct {
-	Categories []dmhy.Category `json:"categories"`
+// MagnetsInput is the JSON input shape for the get_magnets tool.
+type MagnetsInput struct {
+	InfoHashes []string `json:"info_hashes" jsonschema:"info_hash values from prior search_releases / get_recent results"`
+}
+
+// MagnetsOutput is the structured output shape for get_magnets.
+type MagnetsOutput struct {
+	Magnets map[string]string `json:"magnets"`
+	Missing []string          `json:"missing,omitempty"`
 }
 
 // internalHandler is the shape every tool implements internally. The caller
@@ -67,10 +115,24 @@ type internalHandler[I, O any] func(ctx context.Context, in I) (O, *dmhy.ToolErr
 
 // Register adds all dmhy tools to the given server.
 func Register(s *mcpsdk.Server, client *dmhy.Client, logger *slog.Logger) {
+	// Both tools are pure reads against an external feed. Spec defaults are
+	// pessimistic (readOnly=false, destructive=true) so we set them explicitly
+	// to keep agent UIs from warning on every call.
+	falseVal := false
+	trueVal := true
+	readOnly := &mcpsdk.ToolAnnotations{
+		ReadOnlyHint:    true,
+		DestructiveHint: &falseVal,
+		IdempotentHint:  true,
+		OpenWorldHint:   &trueVal,
+	}
 	mcpsdk.AddTool(s,
 		&mcpsdk.Tool{
-			Name:        "search_releases",
-			Description: "Query the DMHY RSS feed with keyword, category, and team filters. At least one filter must be set; otherwise use get_recent.",
+			Name: "search_releases",
+			Description: "Query the DMHY RSS feed with keyword and category filters. At least one filter must be set; otherwise use get_recent. " +
+				"Keyword script preference, in order: romanized Japanese first (most permissive — many groups embed romaji titles), then Traditional Chinese, then Japanese kana/kanji. Simplified Chinese sometimes matches but is less reliable; English titles almost never match verbatim. " +
+				"Start with the shortest fragment likely to be reasonably unique for the show (e.g. \"tenshi\" for \"The Angel Next Door\", \"Honzuki\" for \"Ascendance of a Bookworm\", \"Kuranika\" for \"クラスで２番目に可愛い…\"). Long, fully-spelled, or multi-language queries almost always return zero matches.",
+			Annotations: readOnly,
 		},
 		wrap("search_releases", logger, searchHandler(client)),
 	)
@@ -78,15 +140,19 @@ func Register(s *mcpsdk.Server, client *dmhy.Client, logger *slog.Logger) {
 		&mcpsdk.Tool{
 			Name:        "get_recent",
 			Description: "Return the most recent DMHY releases without requiring a keyword. Useful for browsing a category or group.",
+			Annotations: readOnly,
 		},
 		wrap("get_recent", logger, recentHandler(client)),
 	)
 	mcpsdk.AddTool(s,
 		&mcpsdk.Tool{
-			Name:        "list_categories",
-			Description: "Return the static DMHY category table (sort_id → zh-Hant text and rough English label).",
+			Name: "get_magnets",
+			Description: "Resolve info_hash values from prior search_releases / get_recent results into magnet URIs. " +
+				"Search results omit magnets to keep responses small; call this only for the few releases you actually want to download. " +
+				"Returns a map of info_hash → magnet plus a list of any hashes not in the in-memory cache (re-run the relevant search to repopulate).",
+			Annotations: readOnly,
 		},
-		wrap("list_categories", logger, categoriesHandler()),
+		wrap("get_magnets", logger, magnetsHandler(client)),
 	)
 }
 
@@ -117,12 +183,16 @@ func wrap[I, O any](name string, logger *slog.Logger, h internalHandler[I, O]) m
 
 func searchHandler(client *dmhy.Client) internalHandler[SearchInput, ReleasesOutput] {
 	return func(ctx context.Context, in SearchInput) (ReleasesOutput, *dmhy.ToolError) {
-		if in.Keyword == "" && in.SortID == 0 && in.TeamID == 0 {
+		if in.Keyword == "" && in.Category == "" {
 			return ReleasesOutput{}, &dmhy.ToolError{
 				Code:      dmhy.CodeInvalidArgument,
-				Message:   "search_releases requires at least one of keyword, sort_id, or team_id; use get_recent for the unfiltered firehose",
+				Message:   "search_releases requires at least one of keyword or category; use get_recent for the unfiltered firehose",
 				Retriable: false,
 			}
+		}
+		sortID, terr := resolveCategory(in.Category)
+		if terr != nil {
+			return ReleasesOutput{}, terr
 		}
 		switch in.Order {
 		case "", "date-desc", "date-asc":
@@ -138,20 +208,19 @@ func searchHandler(client *dmhy.Client) internalHandler[SearchInput, ReleasesOut
 			echoOrder = "date-desc"
 		}
 		limit := normalizeLimit(in.Limit, defaultSearchLimit)
+		offset := normalizeOffset(in.Offset)
 		out, terr := runFetch(ctx, client, dmhy.Query{
 			Keyword: in.Keyword,
-			SortID:  in.SortID,
-			TeamID:  in.TeamID,
+			SortID:  sortID,
 			Order:   in.Order,
-		}, limit, in.IncludeDescription)
+		}, limit, offset)
 		if terr != nil {
 			return out, terr
 		}
 		out.Query = QueryEcho{
-			Keyword: in.Keyword,
-			SortID:  in.SortID,
-			TeamID:  in.TeamID,
-			Order:   echoOrder,
+			Keyword:  in.Keyword,
+			Category: in.Category,
+			Order:    echoOrder,
 		}
 		return out, nil
 	}
@@ -159,30 +228,47 @@ func searchHandler(client *dmhy.Client) internalHandler[SearchInput, ReleasesOut
 
 func recentHandler(client *dmhy.Client) internalHandler[RecentInput, ReleasesOutput] {
 	return func(ctx context.Context, in RecentInput) (ReleasesOutput, *dmhy.ToolError) {
+		sortID, terr := resolveCategory(in.Category)
+		if terr != nil {
+			return ReleasesOutput{}, terr
+		}
 		limit := normalizeLimit(in.Limit, defaultRecentLimit)
+		offset := normalizeOffset(in.Offset)
 		out, terr := runFetch(ctx, client, dmhy.Query{
-			SortID: in.SortID,
-			TeamID: in.TeamID,
-		}, limit, false)
+			SortID: sortID,
+		}, limit, offset)
 		if terr != nil {
 			return out, terr
 		}
 		out.Query = QueryEcho{
-			SortID: in.SortID,
-			TeamID: in.TeamID,
-			Order:  "date-desc",
+			Category: in.Category,
+			Order:    "date-desc",
 		}
 		return out, nil
 	}
 }
 
-func categoriesHandler() internalHandler[CategoriesInput, CategoriesOutput] {
-	return func(_ context.Context, _ CategoriesInput) (CategoriesOutput, *dmhy.ToolError) {
-		return CategoriesOutput{Categories: dmhy.Categories}, nil
+func magnetsHandler(client *dmhy.Client) internalHandler[MagnetsInput, MagnetsOutput] {
+	return func(_ context.Context, in MagnetsInput) (MagnetsOutput, *dmhy.ToolError) {
+		// Always return a non-nil Magnets map; the SDK schema rejects null
+		// for object-typed fields even on the error path.
+		empty := MagnetsOutput{Magnets: map[string]string{}}
+		if len(in.InfoHashes) == 0 {
+			return empty, &dmhy.ToolError{
+				Code:      dmhy.CodeInvalidArgument,
+				Message:   "info_hashes is required and must be non-empty",
+				Retriable: false,
+			}
+		}
+		found, missing := client.GetMagnets(in.InfoHashes)
+		if found == nil {
+			found = map[string]string{}
+		}
+		return MagnetsOutput{Magnets: found, Missing: missing}, nil
 	}
 }
 
-func runFetch(ctx context.Context, client *dmhy.Client, q dmhy.Query, limit int, includeDescription bool) (ReleasesOutput, *dmhy.ToolError) {
+func runFetch(ctx context.Context, client *dmhy.Client, q dmhy.Query, limit, offset int) (ReleasesOutput, *dmhy.ToolError) {
 	releases, err := client.Fetch(ctx, q)
 	if err != nil {
 		var te *dmhy.ToolError
@@ -195,22 +281,49 @@ func runFetch(ctx context.Context, client *dmhy.Client, q dmhy.Query, limit int,
 			Retriable: false,
 		}
 	}
-	releases, _ = dmhy.Dedup(releases)
-	truncated := false
-	if len(releases) > limit {
-		releases = releases[:limit]
-		truncated = true
+	// Drop releases outside the supported category set. DMHY returns mixed
+	// categories on keyword-only queries and occasionally even when a
+	// category filter is set; we want anime-only output regardless.
+	filtered := releases[:0]
+	for _, r := range releases {
+		if _, ok := idToCategory[r.CategoryID]; ok {
+			filtered = append(filtered, r)
+		}
 	}
-	if !includeDescription {
-		for i := range releases {
-			releases[i].Description = ""
+	collected, _ := dmhy.Dedup(filtered)
+
+	total := len(collected)
+	var slice []dmhy.Release
+	if offset < total {
+		end := offset + limit
+		if end > total {
+			end = total
+		}
+		slice = collected[offset:end]
+	}
+	hasMore := total > offset+len(slice)
+
+	results := make([]Release, len(slice))
+	for i, r := range slice {
+		results[i] = Release{
+			Category: idToCategory[r.CategoryID],
+			Title:    r.Title,
+			InfoHash: r.InfoHash,
+			PubDate:  r.PubDate,
 		}
 	}
 	return ReleasesOutput{
-		Count:     len(releases),
-		Truncated: truncated,
-		Results:   releases,
+		Count:   len(results),
+		HasMore: hasMore,
+		Results: results,
 	}, nil
+}
+
+func normalizeOffset(in int) int {
+	if in < 0 {
+		return 0
+	}
+	return in
 }
 
 func normalizeLimit(in, def int) int {

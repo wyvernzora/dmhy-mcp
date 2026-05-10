@@ -1,6 +1,6 @@
 // Command dmhy-mcp is the DMHY MCP server entrypoint.
 //
-// It exposes three tools (search_releases, get_recent, list_categories) over
+// It exposes three tools (search_releases, get_recent, get_magnets) over
 // either the stdio transport (for local agents) or the streamable HTTP
 // transport (for k8s deployments). All configuration is via flags, each
 // honoring an environment-variable fallback so container deployments can
@@ -82,6 +82,7 @@ func run() error {
 		RetryBackoff: *retryBackoff,
 		Logger:       logger,
 	})
+	defer client.Close()
 	server := mcppkg.New(client, logger, version)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

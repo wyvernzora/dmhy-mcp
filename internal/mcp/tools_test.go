@@ -64,7 +64,7 @@ func startTestSession(t *testing.T) (*mcpsdk.ClientSession, func()) {
 	return cs, cleanup
 }
 
-func TestListTools_AllThreePresent(t *testing.T) {
+func TestListTools_BothPresent(t *testing.T) {
 	cs, cleanup := startTestSession(t)
 	defer cleanup()
 	res, err := cs.ListTools(context.Background(), nil)
@@ -78,29 +78,10 @@ func TestListTools_AllThreePresent(t *testing.T) {
 			t.Errorf("%s: nil InputSchema", tool.Name)
 		}
 	}
-	for _, want := range []string{"search_releases", "get_recent", "list_categories"} {
+	for _, want := range []string{"search_releases", "get_recent"} {
 		if !got[want] {
 			t.Errorf("missing tool %s", want)
 		}
-	}
-}
-
-func TestListCategories_ReturnsAllEight(t *testing.T) {
-	cs, cleanup := startTestSession(t)
-	defer cleanup()
-	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "list_categories"})
-	if err != nil {
-		t.Fatalf("CallTool: %v", err)
-	}
-	if res.IsError {
-		t.Fatalf("unexpected error result: %+v", res.Content)
-	}
-	var out CategoriesOutput
-	if err := decodeStructured(res, &out); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(out.Categories) != 8 {
-		t.Errorf("got %d categories, want 8", len(out.Categories))
 	}
 }
 
@@ -110,7 +91,7 @@ func TestSearchReleases_HappyPath(t *testing.T) {
 	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
 		Name: "search_releases",
 		Arguments: map[string]any{
-			"keyword": "進撃",
+			"keyword": "anything",
 			"limit":   2,
 		},
 	})
@@ -127,56 +108,30 @@ func TestSearchReleases_HappyPath(t *testing.T) {
 	if out.Count != 2 {
 		t.Errorf("count = %d, want 2", out.Count)
 	}
-	if !out.Truncated {
-		t.Error("truncated should be true (fixture has 8 dedup-survivors > 2)")
+	if !out.HasMore {
+		t.Error("has_more should be true (fixture has 3 anime survivors > limit 2)")
 	}
 	if out.Query.Order != "date-desc" {
 		t.Errorf("query.order = %q, want date-desc", out.Query.Order)
 	}
 	for _, r := range out.Results {
-		if r.Description != "" {
-			t.Errorf("description should be stripped by default: %q", r.Description)
+		if r.Title == "" || r.InfoHash == "" {
+			t.Errorf("incomplete release: %+v", r)
+		}
+		if r.Category != "anime" && r.Category != "anime_season" {
+			t.Errorf("unexpected category %q", r.Category)
 		}
 	}
 }
 
-func TestSearchReleases_DescriptionOptIn(t *testing.T) {
-	cs, cleanup := startTestSession(t)
-	defer cleanup()
-	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
-		Name: "search_releases",
-		Arguments: map[string]any{
-			"keyword":             "進撃",
-			"include_description": true,
-		},
-	})
-	if err != nil {
-		t.Fatalf("CallTool: %v", err)
-	}
-	var out ReleasesOutput
-	if err := decodeStructured(res, &out); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	found := false
-	for _, r := range out.Results {
-		if r.Description != "" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("expected at least one description with include_description=true")
-	}
-}
-
-func TestSearchReleases_DedupApplied(t *testing.T) {
+func TestSearchReleases_FillsToFullFixture(t *testing.T) {
 	cs, cleanup := startTestSession(t)
 	defer cleanup()
 	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
 		Name: "search_releases",
 		Arguments: map[string]any{
 			"keyword": "anything",
-			"limit":   500,
+			"limit":   100,
 		},
 	})
 	if err != nil {
@@ -186,9 +141,140 @@ func TestSearchReleases_DedupApplied(t *testing.T) {
 	if err := decodeStructured(res, &out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	// Fixture has 9 items, 2 sharing the same infohash; expect 8 unique.
-	if out.Count != 8 {
-		t.Errorf("count = %d, want 8 after dedup", out.Count)
+	// Fixture has 9 items across 8 sort_ids; only 3 are anime/anime_season.
+	if out.Count != 3 {
+		t.Errorf("count = %d, want 3 anime survivors", out.Count)
+	}
+	if out.HasMore {
+		t.Error("has_more should be false; full fixture returned")
+	}
+}
+
+func TestSearchReleases_Pagination(t *testing.T) {
+	cs, cleanup := startTestSession(t)
+	defer cleanup()
+	page1, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name: "search_releases",
+		Arguments: map[string]any{
+			"keyword": "anything",
+			"limit":   2,
+			"offset":  0,
+		},
+	})
+	if err != nil {
+		t.Fatalf("page1: %v", err)
+	}
+	var p1 ReleasesOutput
+	if err := decodeStructured(page1, &p1); err != nil {
+		t.Fatalf("decode p1: %v", err)
+	}
+	if p1.Count != 2 || !p1.HasMore {
+		t.Errorf("page1: count=%d has_more=%v, want 2/true", p1.Count, p1.HasMore)
+	}
+
+	page2, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name: "search_releases",
+		Arguments: map[string]any{
+			"keyword": "anything",
+			"limit":   2,
+			"offset":  2,
+		},
+	})
+	if err != nil {
+		t.Fatalf("page2: %v", err)
+	}
+	var p2 ReleasesOutput
+	if err := decodeStructured(page2, &p2); err != nil {
+		t.Fatalf("decode p2: %v", err)
+	}
+	// 3 total survivors, offset 2, limit 2 → 1 returned, no more.
+	if p2.Count != 1 || p2.HasMore {
+		t.Errorf("page2: count=%d has_more=%v, want 1/false", p2.Count, p2.HasMore)
+	}
+
+	seen := map[string]bool{}
+	for _, r := range p1.Results {
+		seen[r.InfoHash] = true
+	}
+	for _, r := range p2.Results {
+		if seen[r.InfoHash] {
+			t.Errorf("info_hash %q appears in both pages", r.InfoHash)
+		}
+	}
+}
+
+func TestGetMagnets_RoundTrip(t *testing.T) {
+	cs, cleanup := startTestSession(t)
+	defer cleanup()
+	// Populate cache via a search.
+	searchRes, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name: "search_releases",
+		Arguments: map[string]any{
+			"keyword": "anything",
+			"limit":   3,
+		},
+	})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	var search ReleasesOutput
+	if err := decodeStructured(searchRes, &search); err != nil {
+		t.Fatalf("decode search: %v", err)
+	}
+	if len(search.Results) == 0 {
+		t.Fatal("no results from search")
+	}
+	hashes := make([]string, 0, len(search.Results))
+	for _, r := range search.Results {
+		hashes = append(hashes, r.InfoHash)
+	}
+	hashes = append(hashes, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef") // unknown hash → missing
+
+	mres, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "get_magnets",
+		Arguments: map[string]any{"info_hashes": hashes},
+	})
+	if err != nil {
+		t.Fatalf("get_magnets: %v", err)
+	}
+	if mres.IsError {
+		t.Fatalf("get_magnets error: %+v", mres.Content)
+	}
+	var mout MagnetsOutput
+	if err := decodeStructured(mres, &mout); err != nil {
+		t.Fatalf("decode magnets: %v", err)
+	}
+	for _, h := range hashes[:len(hashes)-1] {
+		m, ok := mout.Magnets[h]
+		if !ok {
+			t.Errorf("missing magnet for known hash %q", h)
+			continue
+		}
+		if !strings.HasPrefix(m, "magnet:?xt=urn:btih:") {
+			t.Errorf("magnet %q does not start with magnet prefix", m)
+		}
+	}
+	if len(mout.Missing) != 1 || mout.Missing[0] != "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" {
+		t.Errorf("missing list = %v, want one entry for the fake hash", mout.Missing)
+	}
+}
+
+func TestGetMagnets_RejectsEmptyInput(t *testing.T) {
+	cs, cleanup := startTestSession(t)
+	defer cleanup()
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "get_magnets",
+		Arguments: map[string]any{"info_hashes": []string{}},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("expected IsError=true")
+	}
+	te := decodeToolError(t, res)
+	if te.Code != dmhy.CodeInvalidArgument {
+		t.Errorf("code = %s, want %s", te.Code, dmhy.CodeInvalidArgument)
 	}
 }
 
@@ -214,6 +300,30 @@ func TestSearchReleases_RejectsAllZeroFilters(t *testing.T) {
 	}
 	if !strings.Contains(te.Message, "get_recent") {
 		t.Errorf("message should hint get_recent: %q", te.Message)
+	}
+	if !strings.Contains(te.Message, "category") {
+		t.Errorf("message should mention category filter: %q", te.Message)
+	}
+}
+
+func TestSearchReleases_RejectsBadCategory(t *testing.T) {
+	cs, cleanup := startTestSession(t)
+	defer cleanup()
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name: "search_releases",
+		Arguments: map[string]any{
+			"category": "music",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("expected IsError=true")
+	}
+	te := decodeToolError(t, res)
+	if te.Code != dmhy.CodeInvalidArgument {
+		t.Errorf("code = %s, want %s", te.Code, dmhy.CodeInvalidArgument)
 	}
 }
 

@@ -1,0 +1,44 @@
+# air config for the dmhy-mcp dev container. Watches /src/cmd/ and
+# /src/internal/ for .go changes; rebuilds the binary, restarts via
+# run-dmhy.sh which launches with --transport=http.
+#
+# Polling is on because macOS bind mounts don't deliver inotify events
+# reliably to Linux containers; CPU cost is negligible at this interval.
+
+root = "/src"
+tmp_dir = "/src/tmp"
+testdata_dir = "testdata"
+
+[build]
+  cmd = "go build -o /src/tmp/dmhy-mcp ./cmd/dmhy-mcp"
+  bin = "/usr/local/bin/run-dmhy.sh"
+  delay = 200
+  poll = true
+  poll_interval = 500
+  send_interrupt = true
+  kill_delay = 5000
+  # stop_on_error=false: a mid-edit bad build won't kill the watcher;
+  # air keeps polling and retries on the next save.
+  stop_on_error = false
+  log = "build-errors.log"
+  include_ext = ["go"]
+  include_dir = ["cmd", "internal"]
+  exclude_dir = ["bin", "tmp", "testdata", ".git", "tools"]
+  exclude_file = []
+  exclude_regex = ["_test\\.go$"]
+  exclude_unchanged = true
+  follow_symlink = false
+
+[log]
+  time = true
+  main_only = false
+
+[color]
+  main = "magenta"
+  watcher = "cyan"
+  build = "yellow"
+  runner = "green"
+  app = ""
+
+[misc]
+  clean_on_exit = true

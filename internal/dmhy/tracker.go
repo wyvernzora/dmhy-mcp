@@ -177,7 +177,7 @@ func (p *TrackerProber) worker() {
 // probeWithReason returns the alive flag and a short reason string suitable
 // for structured logging. The reason names the failure mode (or "ok" on
 // success) without including the full URL, which the caller adds separately.
-func (p *TrackerProber) probeWithReason(rawURL string) (bool, string) {
+func (p *TrackerProber) probeWithReason(rawURL string) (alive bool, reason string) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return false, "url_parse_error"
@@ -192,10 +192,10 @@ func (p *TrackerProber) probeWithReason(rawURL string) (bool, string) {
 	}
 }
 
-func (p *TrackerProber) probeHTTP(rawURL string) (bool, string) {
-	ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
+func (p *TrackerProber) probeHTTP(rawURL string) (alive bool, reason string) {
+	ctx, cancel := context.WithTimeout(context.Background(), p.timeout) //nolint:contextcheck // background probe; no caller context to inherit
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, rawURL, http.NoBody)
 	if err != nil {
 		return false, "request_build_error"
 	}
@@ -265,7 +265,7 @@ func containsCI(s, sub string) bool {
 
 // probeUDP performs a BEP-15 connect handshake. Returns true if the tracker
 // answered with a valid connect response (action=0, matching transaction_id).
-func (p *TrackerProber) probeUDP(addr string) (bool, string) {
+func (p *TrackerProber) probeUDP(addr string) (alive bool, reason string) {
 	conn, err := net.DialTimeout("udp", addr, p.timeout)
 	if err != nil {
 		return false, classifyHTTPError(err)

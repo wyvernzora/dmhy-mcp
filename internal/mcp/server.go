@@ -85,7 +85,7 @@ func RunHTTP(ctx context.Context, s *mcpsdk.Server, addr string, logger *slog.Lo
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), httpShutdownGrace)
 		defer cancel()
-		return srv.Shutdown(shutdownCtx)
+		return srv.Shutdown(shutdownCtx) //nolint:contextcheck // parent ctx is already cancelled; shutdown needs a fresh deadline
 	case err := <-errCh:
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil

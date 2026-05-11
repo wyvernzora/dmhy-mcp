@@ -241,7 +241,7 @@ func (c *Client) acquire(ctx context.Context) error {
 func (c *Client) release() { <-c.sem }
 
 func (c *Client) fetchOnce(ctx context.Context, target string) (io.ReadCloser, *ToolError) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, http.NoBody)
 	if err != nil {
 		return nil, &ToolError{Code: CodeInternal, Message: "build request: " + err.Error(), Retriable: false}
 	}

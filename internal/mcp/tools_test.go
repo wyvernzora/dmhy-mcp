@@ -32,7 +32,7 @@ func fixtureBytes(t *testing.T) []byte {
 
 // startTestSession spins up an in-memory MCP server backed by a fixture-serving
 // upstream and returns a connected client session.
-func startTestSession(t *testing.T) (*mcpsdk.ClientSession, func()) {
+func startTestSession(t *testing.T) (*mcpsdk.ClientSession, func()) { //nolint:gocritic
 	t.Helper()
 	body := fixtureBytes(t)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

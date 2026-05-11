@@ -40,16 +40,16 @@ func main() {
 func run() error {
 	envWarnings := []envWarning{}
 	var (
-		showVersion      = flag.Bool("version", false, "print version and exit")
-		transport        = stringFlag("transport", "DMHY_TRANSPORT", "stdio", "transport: stdio or http")
-		addr             = stringFlag("addr", "DMHY_ADDR", ":8080", "listen address (http transport only)")
-		userAgent        = stringFlag("user-agent", "DMHY_USER_AGENT", dmhy.DefaultUserAgent, "User-Agent sent to upstream")
-		upstreamBase     = stringFlag("upstream-base", "DMHY_UPSTREAM_BASE", dmhy.DefaultBaseURL, "upstream RSS endpoint")
-		concurrency      = intFlag("upstream-concurrency", "DMHY_UPSTREAM_CONCURRENCY", dmhy.DefaultConcurrency, "max concurrent upstream requests", &envWarnings)
-		minInterval      = durationFlag("upstream-min-interval", "DMHY_UPSTREAM_MIN_INTERVAL", dmhy.DefaultMinInterval, "minimum interval between upstream requests", &envWarnings)
-		upstreamTimeout  = durationFlag("upstream-timeout", "DMHY_UPSTREAM_TIMEOUT", dmhy.DefaultTimeout, "per-request upstream HTTP timeout", &envWarnings)
-		retryBackoff     = durationFlag("upstream-retry-backoff", "DMHY_UPSTREAM_RETRY_BACKOFF", dmhy.DefaultRetryBackoff, "backoff between upstream retries", &envWarnings)
-		logLevel         = stringFlag("log-level", "DMHY_LOG_LEVEL", "info", "log level: debug, info, warn, error")
+		showVersion     = flag.Bool("version", false, "print version and exit")
+		transport       = stringFlag("transport", "DMHY_TRANSPORT", "stdio", "transport: stdio or http")
+		addr            = stringFlag("addr", "DMHY_ADDR", ":8080", "listen address (http transport only)")
+		userAgent       = stringFlag("user-agent", "DMHY_USER_AGENT", dmhy.DefaultUserAgent, "User-Agent sent to upstream")
+		upstreamBase    = stringFlag("upstream-base", "DMHY_UPSTREAM_BASE", dmhy.DefaultBaseURL, "upstream RSS endpoint")
+		concurrency     = intFlag("upstream-concurrency", "DMHY_UPSTREAM_CONCURRENCY", dmhy.DefaultConcurrency, "max concurrent upstream requests", &envWarnings)
+		minInterval     = durationFlag("upstream-min-interval", "DMHY_UPSTREAM_MIN_INTERVAL", dmhy.DefaultMinInterval, "minimum interval between upstream requests", &envWarnings)
+		upstreamTimeout = durationFlag("upstream-timeout", "DMHY_UPSTREAM_TIMEOUT", dmhy.DefaultTimeout, "per-request upstream HTTP timeout", &envWarnings)
+		retryBackoff    = durationFlag("upstream-retry-backoff", "DMHY_UPSTREAM_RETRY_BACKOFF", dmhy.DefaultRetryBackoff, "backoff between upstream retries", &envWarnings)
+		logLevel        = stringFlag("log-level", "DMHY_LOG_LEVEL", "info", "log level: debug, info, warn, error")
 	)
 	flag.Parse()
 

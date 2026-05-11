@@ -1,5 +1,5 @@
 ## Build stage
-FROM golang:1.25-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
 
 WORKDIR /src
 
@@ -9,8 +9,9 @@ RUN go mod download
 
 COPY . .
 
-ARG VERSION=0.1.0
-RUN CGO_ENABLED=0 GOOS=linux \
+ARG VERSION=dev
+ARG TARGETOS TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build \
     -trimpath \
     -ldflags="-s -w -X main.version=${VERSION}" \

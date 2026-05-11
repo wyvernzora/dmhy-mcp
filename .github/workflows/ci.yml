@@ -1,0 +1,163 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+# Cancel superseded runs on PRs and main-branch pushes; never cancel a
+# tag release (a half-pushed manifest list leaves the registry in a
+# confusing state).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+jobs:
+  go:
+    name: go
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # gofmt drift check. The Makefile `fmt` target rewrites in place,
+      # which would silently auto-fix CI runs; here we use `-l` to list
+      # offenders without mutation and fail when the list is non-empty.
+      - name: gofmt
+        run: |
+          drift=$(gofmt -l cmd internal)
+          if [ -n "$drift" ]; then
+            echo "::error::gofmt drift in:" >&2
+            echo "$drift" >&2
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # Pinned to match the version used locally; avoids CI-only failures
+      # when a newer lint release surfaces issues no developer has hit yet.
+      # Bump intentionally with the local install.
+      #
+      # install-mode=goinstall compiles golangci-lint from source against
+      # the Go toolchain `setup-go` just installed. The default `binary`
+      # mode downloads the upstream prebuilt binary, which may be built
+      # with an older Go; when the project targets a newer Go version,
+      # golangci-lint refuses to load config with a version mismatch.
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
+        with:
+          version: v2.12.2
+          install-mode: goinstall
+
+      # -race catches data races; -count=1 disables test caching so a green
+      # CI run reflects an actual execution, not a stale cached pass.
+      - name: go test
+        run: go test -race -count=1 ./...
+
+      - name: go build
+        run: go build -trimpath -o bin/dmhy-mcp ./cmd/dmhy-mcp
+
+  # Build & push the container image to GHCR. Gated on the go job so a
+  # red commit can't ship a poisoned :dev tag. Pull-request events skip
+  # this entirely (no push, no permission to GHCR from forks).
+  #
+  # Tag rules:
+  #   push to main         → :dev  (VERSION=dev-<short_sha>)
+  #   push tag vX.Y.Z      → :vX.Y.Z + :latest  (VERSION=vX.Y.Z)
+  build-push:
+    name: build & push
+    needs: [go]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      # VERSION drives the -ldflags="-X main.version=..." stamp baked into
+      # the binary. Tag pushes use the literal tag; main-branch pushes use
+      # the short SHA prefixed with "dev-" so the running binary still
+      # reports the exact commit it came from.
+      - name: Determine VERSION
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "value=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # QEMU enables linux/arm64 emulation on the amd64 GH-hosted runner.
+      - uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+
+      - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags + labels
+        id: meta
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/main' }}
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+          labels: |
+            org.opencontainers.image.title=dmhy-mcp
+            org.opencontainers.image.description=DMHY RSS proxy for MCP
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.version.outputs.value }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=MIT
+
+      - name: Build & push
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.value }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+  # Prune untagged GHCR image versions accumulated by repeated :dev /
+  # :latest moves. Only untagged versions are eligible; named tags are
+  # never touched.
+  cleanup-untagged:
+    name: prune untagged
+    needs: build-push
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+    steps:
+      - name: Delete untagged versions, keep last 10
+        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5
+        with:
+          package-name: dmhy-mcp
+          package-type: container
+          delete-only-untagged-versions: 'true'
+          min-versions-to-keep: 10

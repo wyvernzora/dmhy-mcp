@@ -124,6 +124,38 @@ func TestSearchReleases_HappyPath(t *testing.T) {
 	}
 }
 
+func TestSearchReleases_FeedURLEchoesQuery(t *testing.T) {
+	// feed_url is the subscribable RSS URL for the same query. Agents
+	// pipe this verbatim into qbit-mcp's qbit_subscribe.feed_url, so
+	// the contract has to be: keyword + category make it into the
+	// query string, and the URL stays stable across pages.
+	cs, cleanup := startTestSession(t)
+	defer cleanup()
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name: "search_releases",
+		Arguments: map[string]any{
+			"keyword":  "tenshi",
+			"category": "anime",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	var out ReleasesOutput
+	if err := decodeStructured(res, &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.FeedURL == "" {
+		t.Fatal("feed_url should be populated on every response")
+	}
+	if !strings.Contains(out.FeedURL, "keyword=tenshi") {
+		t.Errorf("feed_url should embed keyword; got %q", out.FeedURL)
+	}
+	if !strings.Contains(out.FeedURL, "sort_id=") {
+		t.Errorf("feed_url should embed sort_id for category filter; got %q", out.FeedURL)
+	}
+}
+
 func TestSearchReleases_FillsToFullFixture(t *testing.T) {
 	cs, cleanup := startTestSession(t)
 	defer cleanup()

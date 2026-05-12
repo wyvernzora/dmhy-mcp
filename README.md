@@ -12,6 +12,8 @@ MCP server wrapping the [DMHY](https://share.dmhy.org) (動漫花園) anime RSS 
 
 `category`: `anime` (sort_id 2) or `anime_season` (sort_id 31).
 
+`search_releases` and `get_recent` both return a `feed_url` alongside the matched releases — it is the upstream DMHY RSS URL that bakes the same query into a subscribable feed. Pipe verbatim into [qbit-mcp](https://github.com/wyvernzora/qbittorrent-mcp)'s `qbit_subscribe.feed_url` to auto-download ongoing matches of the query.
+
 ## Build & run
 
 ```sh

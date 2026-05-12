@@ -90,8 +90,16 @@ type Release struct {
 }
 
 // ReleasesOutput is the structured output shape for both search and get_recent.
+//
+// FeedURL is the upstream DMHY RSS URL that bakes the resolved query
+// (keyword + category + order) into a subscribable feed. Pipe verbatim
+// into qbit-mcp's qbit_subscribe.feed_url to auto-download new matches
+// of the same query going forward. The field is always populated, even
+// on zero-result responses, because the URL is derived from the query
+// — not from the result set.
 type ReleasesOutput struct {
 	Query   QueryEcho `json:"query"`
+	FeedURL string    `json:"feed_url"`
 	Count   int       `json:"count"`
 	HasMore bool      `json:"has_more"`
 	Results []Release `json:"results"`
@@ -313,6 +321,7 @@ func runFetch(ctx context.Context, client *dmhy.Client, q dmhy.Query, limit, off
 		}
 	}
 	return ReleasesOutput{
+		FeedURL: client.BuildURL(q),
 		Count:   len(results),
 		HasMore: hasMore,
 		Results: results,
